@@ -1,0 +1,201 @@
+# application-docker.yml
+# Docker 환경에서 사용할 Spring Boot 설정
+#
+# 활성화 방법:
+#   1. docker-compose.yml에서: SPRING_PROFILES_ACTIVE=docker
+#   2. 직접 실행: ./gradlew bootRun --args='--spring.profiles.active=docker'
+
+spring:
+  application:
+    name: slack-like-chat-app
+
+  #############################################
+  # 데이터베이스 설정 (PostgreSQL)
+  #############################################
+  datasource:
+    # Docker Compose 네트워크에서 서비스 이름으로 접근
+    url: jdbc:postgresql://postgres:5432/chatdb
+    username: chatuser
+    password: chatpass
+    driver-class-name: org.postgresql.Driver
+
+    # 커넥션 풀 설정 (HikariCP)
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 5
+      connection-timeout: 20000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+
+  #############################################
+  # JPA 설정
+  #############################################
+  jpa:
+    hibernate:
+      # Docker 환경에서는 validate 또는 update 권장
+      # - validate: 스키마 검증만 (프로덕션 권장)
+      # - update: 스키마 자동 업데이트 (개발 편의)
+      ddl-auto: update
+
+    # SQL 로그 (개발 시에만 활성화)
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        # 배치 처리 최적화
+        jdbc.batch_size: 20
+        order_inserts: true
+        order_updates: true
+
+  #############################################
+  # ActiveMQ Artemis 설정 (외부 브로커)
+  #############################################
+  artemis:
+    # embedded 모드 비활성화
+    mode: native
+
+    # Docker Compose 네트워크에서 artemis 서비스로 연결
+    broker-url: tcp://artemis:61616
+
+    # Artemis 관리자 계정
+    user: admin
+    password: admin
+
+    # 연결 풀 설정
+    pool:
+      enabled: true
+      max-connections: 10
+
+  #############################################
+  # JMS 설정
+  #############################################
+  jms:
+    # Pub-Sub 활성화
+    pub-sub-domain: false  # false = Queue 모드
+
+  #############################################
+  # Redis 설정 (선택사항)
+  #############################################
+  data:
+    redis:
+      host: redis
+      port: 6379
+      # 비밀번호 설정 시 주석 해제
+      # password: your-redis-password
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 2
+
+  #############################################
+  # 캐시 설정
+  #############################################
+  cache:
+    type: caffeine
+    caffeine:
+      spec: maximumSize=1000,expireAfterWrite=10m
+
+  #############################################
+  # Security OAuth (추후 구현)
+  #############################################
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${GOOGLE_CLIENT_ID}
+            client-secret: ${GOOGLE_CLIENT_SECRET}
+            scope:
+              - email
+              - profile
+            redirect-uri: ${GOOGLE_REDIRECT_URI:http://localhost:8080/api/auth/google/callback}
+
+#############################################
+# JWT 설정
+#############################################
+jwt:
+  # 환경 변수로 주입 (보안)
+  secret: ${JWT_SECRET:docker-default-secret-key-change-in-production-min-256-bits}
+  expiration: 86400000  # 24시간
+
+#############################################
+# Actuator (Health Check, Metrics)
+#############################################
+management:
+  endpoints:
+    web:
+      exposure:
+        # Health check endpoint 활성화
+        include: health,info,metrics,prometheus
+      base-path: /actuator
+
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true  # Kubernetes liveness/readiness probe 지원
+
+  health:
+    # 각 컴포넌트 health check
+    db:
+      enabled: true
+    redis:
+      enabled: true
+
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+
+#############################################
+# 로깅 설정
+#############################################
+logging:
+  level:
+    root: INFO
+    net.meeemo.chat: DEBUG
+    org.springframework.web: INFO
+    org.springframework.security: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+    org.apache.activemq: INFO
+
+  # 로그 파일 (Docker 볼륨에 저장 가능)
+  file:
+    name: /app/logs/application.log
+    max-size: 10MB
+    max-history: 7
+
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+#############################################
+# 서버 설정
+#############################################
+server:
+  port: 8080
+
+  # Graceful shutdown (컨테이너 종료 시 안전하게)
+  shutdown: graceful
+
+  # 압축 활성화
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/xml,text/plain
+
+  # 에러 페이지
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: on_param  # ?trace=true 시에만 스택트레이스 표시
+    include-exception: false
+
+#############################################
+# Spring 기타 설정
+#############################################
+# Graceful shutdown timeout
+spring.lifecycle.timeout-per-shutdown-phase: 30s

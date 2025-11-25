@@ -1,0 +1,24 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "./gradlew clean bootJar -x test"
+  },
+  "deploy": {
+    "startCommand": "java -Xmx512m -jar build/libs/*.jar --spring.profiles.active=minimal",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  },
+  "healthcheck": {
+    "path": "/actuator/health",
+    "timeout": 30,
+    "interval": 60
+  },
+  "services": [
+    {
+      "name": "postgres",
+      "icon": "postgres",
+      "plan": "hobby"
+    }
+  ]
+}
