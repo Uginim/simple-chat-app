@@ -1,0 +1,186 @@
+# Docker Compose 설정 - 개발 환경
+# 용도: 로컬 개발 시 PostgreSQL + Artemis를 Docker로 실행
+#
+# 사용법:
+#   개발 시작: docker-compose up -d
+#   종료: docker-compose down
+#   데이터 삭제: docker-compose down -v
+
+version: '3.8'
+
+services:
+  #############################################
+  # PostgreSQL Database
+  #############################################
+  postgres:
+    image: postgres:15-alpine
+    container_name: chat-postgres
+    environment:
+      # 데이터베이스 초기 설정
+      POSTGRES_DB: chatdb
+      POSTGRES_USER: chatuser
+      POSTGRES_PASSWORD: chatpass
+
+      # PostgreSQL 설정
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+
+    ports:
+      # 호스트:컨테이너
+      - "5432:5432"
+
+    volumes:
+      # 데이터 영구 저장 (컨테이너 삭제해도 유지)
+      - postgres-data:/var/lib/postgresql/data
+
+      # 초기화 스크립트 (선택사항)
+      # - ./init-scripts:/docker-entrypoint-initdb.d
+
+    healthcheck:
+      # PostgreSQL 준비 상태 확인
+      test: ["CMD-SHELL", "pg_isready -U chatuser -d chatdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    networks:
+      - chat-network
+
+    restart: unless-stopped
+
+  #############################################
+  # ActiveMQ Artemis (JMS Broker)
+  #############################################
+  artemis:
+    image: apache/activemq-artemis:2.31.2-alpine
+    container_name: chat-artemis
+    environment:
+      # 관리자 계정
+      ARTEMIS_USER: admin
+      ARTEMIS_PASSWORD: admin
+
+      # 브로커 설정
+      ANONYMOUS_LOGIN: "false"  # 익명 로그인 비활성화
+
+      # 메모리 설정 (개발 환경)
+      ARTEMIS_MIN_MEMORY: 512M
+      ARTEMIS_MAX_MEMORY: 1024M
+
+    ports:
+      # 61616: Core Protocol (JMS)
+      # 8161: Web Console (관리 UI)
+      # 5672: AMQP
+      # 61613: STOMP
+      - "61616:61616"  # JMS
+      - "8161:8161"    # Web Console
+      - "5672:5672"    # AMQP (선택)
+      - "61613:61613"  # STOMP (선택)
+
+    volumes:
+      # Artemis 데이터 영구 저장
+      - artemis-data:/var/lib/artemis-instance
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8161/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+    networks:
+      - chat-network
+
+    restart: unless-stopped
+
+  #############################################
+  # Redis (선택사항 - 분산 캐시용)
+  #############################################
+  redis:
+    image: redis:7-alpine
+    container_name: chat-redis
+    command: redis-server --appendonly yes
+
+    ports:
+      - "6379:6379"
+
+    volumes:
+      - redis-data:/data
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+    networks:
+      - chat-network
+
+    restart: unless-stopped
+
+  #############################################
+  # Spring Boot Application (선택사항)
+  #############################################
+  # 주석 해제하면 애플리케이션도 Docker로 실행
+  # app:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: chat-app
+  #   environment:
+  #     # Spring 프로필
+  #     SPRING_PROFILES_ACTIVE: docker
+  #
+  #     # PostgreSQL 연결
+  #     SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/chatdb
+  #     SPRING_DATASOURCE_USERNAME: chatuser
+  #     SPRING_DATASOURCE_PASSWORD: chatpass
+  #
+  #     # Artemis 연결
+  #     SPRING_ARTEMIS_MODE: native
+  #     SPRING_ARTEMIS_BROKER_URL: tcp://artemis:61616
+  #     SPRING_ARTEMIS_USER: admin
+  #     SPRING_ARTEMIS_PASSWORD: admin
+  #
+  #     # Redis 연결
+  #     SPRING_REDIS_HOST: redis
+  #     SPRING_REDIS_PORT: 6379
+  #
+  #     # JWT Secret (환경 변수로 관리)
+  #     JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
+  #
+  #   ports:
+  #     - "8080:8080"
+  #
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     artemis:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #
+  #   networks:
+  #     - chat-network
+  #
+  #   restart: unless-stopped
+
+#############################################
+# Volumes (데이터 영구 저장)
+#############################################
+volumes:
+  postgres-data:
+    driver: local
+    # 저장 위치: /var/lib/docker/volumes/simple-chat-app_postgres-data
+
+  artemis-data:
+    driver: local
+
+  redis-data:
+    driver: local
+
+#############################################
+# Networks (컨테이너 간 통신)
+#############################################
+networks:
+  chat-network:
+    driver: bridge
+    # 컨테이너들이 이름으로 서로 통신 가능
+    # 예: postgres:5432, artemis:61616

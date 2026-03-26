@@ -1,0 +1,339 @@
+# docker-compose.prod.yml
+# 프로덕션 환경 설정
+#
+# 사용법:
+#   docker-compose -f docker-compose.prod.yml up -d
+#
+# 특징:
+# - 데이터 영구 저장 강화
+# - 보안 설정 추가
+# - 리소스 제한
+# - 로깅 설정
+# - Health check 강화
+
+version: '3.8'
+
+services:
+  #############################################
+  # PostgreSQL Database (Production)
+  #############################################
+  postgres:
+    image: postgres:15-alpine
+    container_name: chat-postgres-prod
+    environment:
+      POSTGRES_DB: ${DB_NAME:-chatdb}
+      POSTGRES_USER: ${DB_USER:-chatuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Database password required}  # 필수
+
+      # PostgreSQL 성능 튜닝
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+
+    ports:
+      # 외부 노출 최소화 (내부 네트워크만 사용)
+      # 필요 시 주석 해제
+      # - "5432:5432"
+
+    volumes:
+      # 프로덕션 데이터 경로 명시
+      - /var/lib/postgresql/data:/var/lib/postgresql/data
+      # 또는 named volume
+      # - postgres-prod-data:/var/lib/postgresql/data
+
+      # 백업 스크립트
+      # - ./backup:/backup
+
+    # 리소스 제한
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-chatuser} -d ${DB_NAME:-chatdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    networks:
+      - chat-network
+
+    restart: always
+
+    # 로깅 설정
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  #############################################
+  # ActiveMQ Artemis (Production)
+  #############################################
+  artemis:
+    image: apache/activemq-artemis:2.31.2
+    container_name: chat-artemis-prod
+    environment:
+      ARTEMIS_USER: ${ARTEMIS_USER:-admin}
+      ARTEMIS_PASSWORD: ${ARTEMIS_PASSWORD:?Artemis password required}
+
+      # 프로덕션 설정
+      ANONYMOUS_LOGIN: "false"
+
+      # 메모리 설정 (프로덕션)
+      ARTEMIS_MIN_MEMORY: 1024M
+      ARTEMIS_MAX_MEMORY: 2048M
+
+      # 클러스터 설정 (선택)
+      # ARTEMIS_CLUSTER_PASSWORD: ${CLUSTER_PASSWORD}
+
+    ports:
+      # Web Console은 보안상 외부 노출 권장 안 함
+      # Nginx 등 리버스 프록시 사용
+      # - "8161:8161"
+      - "61616:61616"  # JMS만 노출
+
+    volumes:
+      # 영구 저장
+      - artemis-prod-data:/var/lib/artemis-instance
+
+      # 커스텀 설정 (선택)
+      # - ./artemis-config:/var/lib/artemis-instance/etc-override
+
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8161/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    networks:
+      - chat-network
+
+    restart: always
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  #############################################
+  # Redis (Production)
+  #############################################
+  redis:
+    image: redis:7-alpine
+    container_name: chat-redis-prod
+    command: >
+      redis-server
+      --appendonly yes
+      --requirepass ${REDIS_PASSWORD:?Redis password required}
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+
+    ports:
+      # 외부 노출 최소화
+      # - "6379:6379"
+
+    volumes:
+      - redis-prod-data:/data
+
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+    networks:
+      - chat-network
+
+    restart: always
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  #############################################
+  # Spring Boot Application (Production)
+  #############################################
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - BUILD_DATE=${BUILD_DATE}
+        - VERSION=${VERSION:-1.0.0}
+    container_name: chat-app-prod
+    image: chat-app:${VERSION:-latest}
+
+    environment:
+      # Spring Profile
+      SPRING_PROFILES_ACTIVE: prod,docker
+
+      # Database
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-chatdb}
+      SPRING_DATASOURCE_USERNAME: ${DB_USER:-chatuser}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:?Database password required}
+
+      # Artemis
+      SPRING_ARTEMIS_MODE: native
+      SPRING_ARTEMIS_BROKER_URL: tcp://artemis:61616
+      SPRING_ARTEMIS_USER: ${ARTEMIS_USER:-admin}
+      SPRING_ARTEMIS_PASSWORD: ${ARTEMIS_PASSWORD:?Artemis password required}
+
+      # Redis
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+      SPRING_REDIS_PASSWORD: ${REDIS_PASSWORD:?Redis password required}
+
+      # JWT
+      JWT_SECRET: ${JWT_SECRET:?JWT secret required}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-3600000}  # 1시간
+
+      # Google OAuth
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?Google client ID required}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?Google client secret required}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI}
+
+      # JVM Options
+      JAVA_OPTS: >
+        -Xms1g
+        -Xmx2g
+        -XX:+UseG1GC
+        -XX:MaxGCPauseMillis=200
+        -XX:+HeapDumpOnOutOfMemoryError
+        -XX:HeapDumpPath=/app/logs/heap-dump.hprof
+
+    ports:
+      - "${APP_PORT:-8080}:8080"
+
+    volumes:
+      # 로그 저장
+      - app-logs:/app/logs
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      artemis:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    deploy:
+      replicas: ${APP_REPLICAS:-2}  # 여러 인스턴스 실행 (로드 밸런싱)
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    networks:
+      - chat-network
+
+    restart: always
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  #############################################
+  # Nginx (Reverse Proxy + Load Balancer)
+  #############################################
+  nginx:
+    image: nginx:alpine
+    container_name: chat-nginx
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro  # SSL 인증서
+
+    ports:
+      - "80:80"
+      - "443:443"
+
+    depends_on:
+      - app
+
+    networks:
+      - chat-network
+
+    restart: always
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+#############################################
+# Volumes
+#############################################
+volumes:
+  postgres-prod-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/postgres  # 실제 서버 경로
+
+  artemis-prod-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/artemis
+
+  redis-prod-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /data/redis
+
+  app-logs:
+    driver: local
+
+#############################################
+# Networks
+#############################################
+networks:
+  chat-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16

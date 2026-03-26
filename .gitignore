@@ -39,4 +39,14 @@ out/
 ### Kotlin ###
 .kotlin
 
+### OAuth & Secrets ###
 application-oauth.yml
+
+### Docker ###
+.env
+.env.*
+!.env.example
+
+### Logs ###
+logs/
+*.log

@@ -1,0 +1,212 @@
+# application-minimal.yml
+# 최소 비용 운영을 위한 경량 설정
+#
+# 특징:
+# - Artemis/JMS 비활성화
+# - Redis 비활성화
+# - 메모리 최적화
+#
+# 활성화:
+#   java -jar app.jar --spring.profiles.active=minimal
+
+spring:
+  application:
+    name: chat-app-minimal
+
+  #############################################
+  # 데이터베이스 설정
+  #############################################
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/chatdb}
+    username: ${SPRING_DATASOURCE_USERNAME:chatuser}
+    password: ${SPRING_DATASOURCE_PASSWORD:chatpass}
+    driver-class-name: org.postgresql.Driver
+
+    # HikariCP 최적화 (저사양)
+    hikari:
+      maximum-pool-size: 5      # 기본 10 → 5
+      minimum-idle: 2           # 기본 5 → 2
+      connection-timeout: 20000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      pool-name: ChatHikariPool
+
+  #############################################
+  # JPA 설정
+  #############################################
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        # 배치 최적화
+        jdbc.batch_size: 10     # 기본 20 → 10
+        order_inserts: true
+        order_updates: true
+        # 쿼리 캐시 활성화
+        cache.use_second_level_cache: true
+        cache.use_query_cache: true
+        cache.region.factory_class: org.hibernate.cache.jcache.JCacheRegionFactory
+
+  #############################################
+  # Artemis/JMS 비활성화
+  #############################################
+  artemis:
+    mode: none
+  jms:
+    enabled: false
+
+  #############################################
+  # 캐시 설정 (Caffeine만 사용)
+  #############################################
+  cache:
+    type: caffeine
+    caffeine:
+      # 메모리 절약
+      spec: >
+        maximumSize=500,
+        expireAfterWrite=5m,
+        recordStats
+
+  #############################################
+  # WebSocket 설정
+  #############################################
+  websocket:
+    # 메시지 크기 제한
+    message-size-limit: 65536  # 64KB
+    send-buffer-size-limit: 524288  # 512KB
+
+#############################################
+# JWT 설정
+#############################################
+jwt:
+  secret: ${JWT_SECRET:minimal-change-this-secret-key-in-production}
+  expiration: ${JWT_EXPIRATION:86400000}  # 24시간
+
+#############################################
+# Actuator (Health Check만)
+#############################################
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+      base-path: /actuator
+
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+
+  health:
+    db:
+      enabled: true
+
+  # Metrics 비활성화 (메모리 절약)
+  metrics:
+    enable:
+      jvm: false
+      process: false
+      system: false
+
+#############################################
+# 로깅 설정 (최소화)
+#############################################
+logging:
+  level:
+    root: INFO
+    net.meeemo.chat: INFO
+    org.springframework.web: WARN
+    org.springframework.security: WARN
+    org.hibernate.SQL: WARN
+    org.hibernate.type: WARN
+
+  # 로그 파일 (선택사항)
+  file:
+    name: /app/logs/application.log
+    max-size: 5MB
+    max-history: 3
+
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level %logger{36} - %msg%n"
+
+#############################################
+# 서버 설정
+#############################################
+server:
+  port: 8080
+
+  # Graceful shutdown
+  shutdown: graceful
+
+  # Tomcat 튜닝 (저사양)
+  tomcat:
+    threads:
+      max: 50           # 기본 200 → 50
+      min-spare: 5      # 기본 10 → 5
+    connection-timeout: 20000
+    max-connections: 1000  # 기본 8192 → 1000
+    accept-count: 100   # 기본 100
+
+  # 압축 활성화 (대역폭 절약)
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/xml,text/plain
+    min-response-size: 1024
+
+  # 에러 페이지 최소화
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: never
+    include-exception: false
+
+#############################################
+# Spring 기타 설정
+#############################################
+spring.lifecycle.timeout-per-shutdown-phase: 20s
+
+# 배너 비활성화 (메모리 절약)
+spring.main.banner-mode: off
+
+# Lazy Initialization (시작 속도 향상)
+spring.main.lazy-initialization: false  # true로 설정 시 시작 빠르지만 첫 요청 느림
+
+#############################################
+# 커스텀 설정
+#############################################
+chat:
+  # 메시지 캐시 설정
+  message-cache:
+    max-size: 50       # 채널당 최근 50개 메시지
+    expire-minutes: 5
+
+  # 사용자 세션 설정
+  user-session:
+    cleanup-interval: 600000  # 10분마다 정리
+    inactive-threshold: 1800000  # 30분 비활성 시 제거
+
+  # WebSocket 설정
+  websocket:
+    max-sessions: 200  # 최대 동시 접속자
+
+#############################################
+# 참고: 이 설정으로 가능한 것
+#
+# ✅ 실시간 채팅 (WebSocket)
+# ✅ 메시지 영구 저장 (PostgreSQL)
+# ✅ 최근 메시지 캐싱 (Caffeine)
+# ✅ 사용자 인증 (JWT)
+# ✅ 동시 접속 50-100명
+#
+# ❌ 메시지 큐 (JMS 없음)
+# ❌ 분산 캐시 (Redis 없음)
+# ❌ 다중 서버 배포 (단일 서버만)
+#
+# 메모리 사용량: ~800MB (최대 1GB)
+# 권장 서버: 2GB RAM
+#############################################

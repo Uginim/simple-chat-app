@@ -1,0 +1,206 @@
+# docker-compose.minimal.yml
+# 최소 비용 구성 - 2GB RAM 서버용
+#
+# 용도: 개인 프로젝트, MVP, 소규모 팀 (동시 접속 50-100명)
+#
+# 특징:
+# - Artemis 제거 (WebSocket 직접 사용)
+# - Redis 제거 (Caffeine Cache만 사용)
+# - PostgreSQL 최적화
+# - 메모리 제한 설정
+#
+# 사용법:
+#   docker-compose -f docker-compose.minimal.yml up -d
+#
+# 예상 비용:
+#   DigitalOcean: $12/월 (2 vCPU, 2GB RAM)
+#   Hetzner: €4.15/월 (~$5/월)
+
+version: '3.8'
+
+services:
+  #############################################
+  # PostgreSQL (메모리 최적화)
+  #############################################
+  postgres:
+    image: postgres:15-alpine
+    container_name: chat-postgres-minimal
+    environment:
+      POSTGRES_DB: chatdb
+      POSTGRES_USER: chatuser
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-chatpass}
+
+      # PostgreSQL 성능 튜닝 (저사양)
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+
+    # 메모리 최적화 설정
+    command: >
+      postgres
+      -c max_connections=20
+      -c shared_buffers=128MB
+      -c effective_cache_size=256MB
+      -c maintenance_work_mem=32MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=4MB
+      -c default_statistics_target=50
+      -c random_page_cost=1.1
+      -c work_mem=4MB
+
+    ports:
+      - "${DB_PORT:-5432}:5432"
+
+    volumes:
+      # 로컬 디렉토리에 데이터 저장 (비용 절감)
+      - ./data/postgres:/var/lib/postgresql/data
+
+    # 리소스 제한 (최대 512MB)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatuser -d chatdb"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+    networks:
+      - chat-network
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  #############################################
+  # Spring Boot Application (경량 모드)
+  #############################################
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat-app-minimal
+    image: chat-app:minimal
+
+    environment:
+      # Spring Profile (경량 모드)
+      SPRING_PROFILES_ACTIVE: minimal
+
+      # Database
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/chatdb
+      SPRING_DATASOURCE_USERNAME: chatuser
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-chatpass}
+
+      # JPA 설정
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_SHOW_SQL: false
+
+      # Artemis 비활성화 (WebSocket만 사용)
+      SPRING_ARTEMIS_MODE: none
+      SPRING_JMS_ENABLED: false
+
+      # Redis 비활성화 (Caffeine만 사용)
+      SPRING_CACHE_TYPE: caffeine
+
+      # JWT
+      JWT_SECRET: ${JWT_SECRET:-minimal-secret-key-change-in-production-please}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-86400000}
+
+      # Google OAuth (선택사항)
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+
+      # JVM 옵션 (메모리 절약)
+      JAVA_OPTS: >
+        -Xms256m
+        -Xmx768m
+        -XX:+UseSerialGC
+        -XX:MaxMetaspaceSize=128m
+        -Djava.security.egd=file:/dev/./urandom
+
+    ports:
+      - "${APP_PORT:-8080}:8080"
+
+    volumes:
+      # 로그 저장 (선택사항)
+      - ./logs:/app/logs
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    # 리소스 제한 (최대 1GB)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    networks:
+      - chat-network
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+#############################################
+# Networks
+#############################################
+networks:
+  chat-network:
+    driver: bridge
+
+#############################################
+# 주석: Redis/Artemis는 제거됨
+#
+# 이유:
+# - Artemis: 메모리 1GB 사용 → WebSocket 직접 사용으로 대체
+# - Redis: 메모리 512MB 사용 → Caffeine Cache로 대체
+#
+# 트레이드오프:
+# - 메시지 안정성 감소 (JMS 큐 없음)
+# - 다중 서버 배포 어려움 (캐시 공유 안 됨)
+# - 하지만 단일 서버 운영에는 문제 없음!
+#############################################
+
+#############################################
+# 총 리소스 사용량
+#
+# PostgreSQL: 512MB
+# Spring Boot: 1GB
+# 시스템:     512MB
+# ─────────────────────
+# 합계:       2GB
+#
+# 권장 서버 스펙:
+# - 2 vCPU
+# - 2GB RAM
+# - 20GB SSD
+#
+# 월 비용:
+# - DigitalOcean: $12
+# - Hetzner: €4.15 (~$5)
+# - Vultr: $6
+#############################################
